@@ -1,0 +1,153 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String?
+  role         String   @default("user")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model GlobalSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("global_settings")
+}
+
+model ApiKey {
+  id               String   @id @default(uuid())
+  label            String
+  encryptedKey     String   @map("encrypted_key")
+  keyPreview       String   @map("key_preview")
+  assignedUserId   String?  @map("assigned_user_id")
+  preferredModelId String?  @map("preferred_model_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@index([assignedUserId])
+  @@map("api_keys")
+}
+
+model Project {
+  id            String         @id @default(uuid())
+  userId        String         @map("user_id")
+  name          String
+  icon          String         @default("folder")
+  color         String         @default("blue")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  conversations Conversation[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("projects")
+}
+
+model Conversation {
+  id           String            @id @default(uuid())
+  userId       String            @map("user_id")
+  title        String
+  projectId    String?           @map("project_id")
+  modelId      String?           @map("model_id")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+  messages     Message[]
+  chatSession  ChatSession?
+  toolAuditLog ToolAuditLog[]
+  tokenUsage   UserTokenUsage[]
+  project      Project?          @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([userId, updatedAt(sort: Desc)])
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String       @map("conversation_id")
+  role           String
+  content        String
+  attachments    Json?
+  tokensUsed     Int?         @map("tokens_used")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+model ChatSession {
+  id                  String       @id @default(uuid())
+  conversationId      String       @unique @map("conversation_id")
+  openclaudeSessionId String       @map("openclaude_session_id")
+  workingDirectory    String?      @map("working_directory")
+  model               String?
+  systemPrompt        String?      @map("system_prompt")
+  allowedTools        Json?        @map("allowed_tools")
+  maxTurns            Int?         @map("max_turns")
+  createdAt           DateTime     @default(now()) @map("created_at")
+  updatedAt           DateTime     @updatedAt @map("updated_at")
+  conversation        Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("chat_sessions")
+}
+
+model UserTokenUsage {
+  id               String        @id @default(uuid())
+  userId           String        @map("user_id")
+  conversationId   String?       @map("conversation_id")
+  promptTokens     Int           @default(0) @map("prompt_tokens")
+  completionTokens Int           @default(0) @map("completion_tokens")
+  model            String?
+  createdAt        DateTime      @default(now()) @map("created_at")
+  conversation     Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([conversationId])
+  @@map("user_token_usage")
+}
+
+model ContextNote {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  title     String
+  content   String   @default("")
+  isActive  Boolean  @default(false) @map("is_active")
+  projectId String?  @map("project_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, updatedAt(sort: Desc)])
+  @@map("context_notes")
+}
+
+model ToolAuditLog {
+  id             String        @id @default(uuid())
+  conversationId String?       @map("conversation_id")
+  userId         String        @map("user_id")
+  toolName       String        @map("tool_name")
+  decision       String
+  reason         String?
+  createdAt      DateTime      @default(now()) @map("created_at")
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@index([userId, createdAt])
+  @@map("tool_audit_logs")
+}

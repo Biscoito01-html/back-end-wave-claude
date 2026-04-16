@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wavepage_db
+    restart: always
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: wavepage_db
+      POSTGRES_USER: wavepage_user
+      POSTGRES_PASSWORD: wavepage_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app_network
+
+volumes:
+  postgres_data:
+
+networks:
+  app_network:
+
