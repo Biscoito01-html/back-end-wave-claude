@@ -169,6 +169,10 @@ export class ChatController {
           res.write(`event: token\n`);
           res.write(`data: ${JSON.stringify({ text: chunk })}\n\n`);
         },
+        onHtmlPreview: (html: string, filePath: string) => {
+          res.write(`event: html_preview\n`);
+          res.write(`data: ${JSON.stringify({ html, file_path: filePath })}\n\n`);
+        },
         onDone: async ({ fullText, promptTokens, completionTokens }) => {
           const finalText = (fullText || streamedText).trim();
 

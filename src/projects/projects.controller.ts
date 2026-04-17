@@ -14,6 +14,11 @@ class CreateProjectDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
+  description?: string;
+
+  @IsOptional()
+  @IsString()
   icon?: string;
 
   @IsOptional()
@@ -26,6 +31,11 @@ class UpdateProjectDto {
   @IsString()
   @MaxLength(100)
   name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
 
   @IsOptional()
   @IsString()

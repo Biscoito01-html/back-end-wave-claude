@@ -50,11 +50,13 @@ model Project {
   id            String         @id @default(uuid())
   userId        String         @map("user_id")
   name          String
+  description   String?
   icon          String         @default("folder")
   color         String         @default("blue")
   createdAt     DateTime       @default(now()) @map("created_at")
   updatedAt     DateTime       @updatedAt @map("updated_at")
   conversations Conversation[]
+  pages         Page[]
 
   @@index([userId, createdAt(sort: Desc)])
   @@map("projects")
@@ -135,6 +137,21 @@ model ContextNote {
 
   @@index([userId, updatedAt(sort: Desc)])
   @@map("context_notes")
+}
+
+model Page {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  projectId   String?  @map("project_id")
+  title       String
+  htmlContent String   @map("html_content")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([projectId])
+  @@map("pages")
 }
 
 model ToolAuditLog {

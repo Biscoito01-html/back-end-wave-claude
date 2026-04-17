@@ -23,6 +23,7 @@ const ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
   'text/plain',
   'text/markdown',
+  'text/x-markdown',
   'text/csv',
   'application/json',
   'text/xml',
@@ -38,13 +39,23 @@ const ALLOWED_MIME_TYPES = new Set([
   'audio/wav',
 ]);
 
+// Extensões permitidas como fallback quando o browser reporta MIME genérico
+// (ex: Windows envia .md como application/octet-stream)
+const ALLOWED_EXTENSIONS = new Set([
+  '.md', '.markdown',
+  '.txt',
+  '.csv',
+  '.json',
+  '.xml',
+  '.html', '.htm',
+  '.pdf',
+  '.doc', '.docx',
+  '.xls', '.xlsx',
+  '.svg',
+]);
+
 const MAX_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
 
-function resolveUploadDir(configService: ConfigService): string {
-  const configured = configService.get<string>('UPLOAD_DIR');
-  if (configured) return configured;
-  return join(process.cwd(), 'uploads');
-}
 
 @UseGuards(JwtAuthGuard)
 @Controller('upload')
@@ -67,7 +78,8 @@ export class UploadController {
       }),
       limits: { fileSize: MAX_SIZE_BYTES },
       fileFilter: (_req, file, cb) => {
-        if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
+        const ext = extname(file.originalname).toLowerCase();
+        if (ALLOWED_MIME_TYPES.has(file.mimetype) || ALLOWED_EXTENSIONS.has(ext)) {
           cb(null, true);
         } else {
           cb(
@@ -93,15 +105,35 @@ export class UploadController {
       this.configService.get<string>('BACKEND_URL') ?? 'http://localhost:3002';
 
     return {
-      files: files.map((f) => ({
-        name: f.originalname,
-        storedName: f.filename,
-        url: `${backendUrl}/uploads/${f.filename}`,
-        type: this.resolveType(f.mimetype),
-        mimeType: f.mimetype,
-        size: f.size,
-      })),
+      files: files.map((f) => {
+        const normalizedMime = this.normalizeMime(f.mimetype, f.originalname);
+        return {
+          name: f.originalname,
+          storedName: f.filename,
+          url: `${backendUrl}/uploads/${f.filename}`,
+          type: this.resolveType(normalizedMime),
+          mimeType: normalizedMime,
+          size: f.size,
+        };
+      }),
     };
+  }
+
+  private normalizeMime(mime: string, originalname: string): string {
+    if (mime !== 'application/octet-stream') return mime;
+    const ext = extname(originalname).toLowerCase();
+    const EXT_TO_MIME: Record<string, string> = {
+      '.md': 'text/markdown',
+      '.markdown': 'text/markdown',
+      '.txt': 'text/plain',
+      '.csv': 'text/csv',
+      '.json': 'application/json',
+      '.xml': 'text/xml',
+      '.html': 'text/html',
+      '.htm': 'text/html',
+      '.svg': 'image/svg+xml',
+    };
+    return EXT_TO_MIME[ext] ?? mime;
   }
 
   private resolveType(

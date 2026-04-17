@@ -12,18 +12,19 @@ export class ProjectsService {
     });
   }
 
-  create(userId: string, data: { name: string; icon?: string; color?: string }) {
+  create(userId: string, data: { name: string; description?: string; icon?: string; color?: string }) {
     return this.prisma.project.create({
       data: {
         userId,
         name: data.name,
+        description: data.description ?? null,
         icon: data.icon ?? 'folder',
         color: data.color ?? 'blue',
       },
     });
   }
 
-  async update(userId: string, id: string, data: { name?: string; icon?: string; color?: string }) {
+  async update(userId: string, id: string, data: { name?: string; description?: string; icon?: string; color?: string }) {
     await this.assertOwnership(userId, id);
     return this.prisma.project.update({ where: { id }, data });
   }

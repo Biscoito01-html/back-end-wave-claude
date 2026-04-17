@@ -12,7 +12,7 @@ export interface GlobalSettings {
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   // ── Global settings ────────────────────────────────────────────────
   async getGlobalSettings(): Promise<GlobalSettings> {
@@ -112,9 +112,9 @@ export class AdminService {
     const users =
       userIds.length > 0
         ? await this.prisma.user.findMany({
-            where: { id: { in: userIds } },
-            select: { id: true, email: true, name: true },
-          })
+          where: { id: { in: userIds } },
+          select: { id: true, email: true, name: true },
+        })
         : [];
     const userById = new Map(users.map((u) => [u.id, u]));
 
@@ -276,7 +276,7 @@ export class AdminService {
 
     let apiKey: string | null = null;
     if (key) {
-      try { apiKey = decryptValue(key.encryptedKey); } catch {}
+      try { apiKey = decryptValue(key.encryptedKey); } catch { }
     }
     // Fallback to OPENAI_API_KEY env if no key in DB
     apiKey ??= process.env.OPENAI_API_KEY ?? null;

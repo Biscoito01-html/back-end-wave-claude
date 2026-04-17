@@ -26,6 +26,7 @@ type StreamCallbacks = {
   }) => Promise<void>;
   onError: (message: string) => void;
   onComplete?: () => void;
+  onHtmlPreview?: (html: string, filePath: string) => void;
 };
 
 const IMAGE_MIME_TYPES = new Set([
@@ -42,7 +43,7 @@ export class ChatService {
     private readonly httpService: OpenClaudeHttpService,
     private readonly configService: ConfigService,
     private readonly adminService: AdminService,
-  ) {}
+  ) { }
 
   async listConversations(userId: string) {
     return this.prisma.conversation.findMany({
@@ -277,9 +278,9 @@ export class ChatService {
     const conversationHistory =
       dbMessages.length > 0
         ? dbMessages.map((m) => ({
-            role: m.role as 'user' | 'assistant',
-            content: [{ type: 'text' as const, text: m.content }],
-          }))
+          role: m.role as 'user' | 'assistant',
+          content: [{ type: 'text' as const, text: m.content }],
+        }))
         : undefined;
 
     // Resolve what to send: plain string, augmented string, or image+text blocks
@@ -339,6 +340,7 @@ Ferramentas de leitura (Read, Grep, Glob, WebFetch, WebSearch) são permitidas p
         },
         onError: params.onStream.onError,
         onComplete: params.onStream.onComplete,
+        onHtmlPreview: params.onStream.onHtmlPreview,
       },
     });
   }

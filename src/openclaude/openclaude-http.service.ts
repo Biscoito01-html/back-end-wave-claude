@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { readFile } from 'fs/promises';
 
 export interface StreamCallbacks {
   onToken: (chunk: string) => void;
@@ -10,6 +11,7 @@ export interface StreamCallbacks {
   }) => Promise<void>;
   onError: (message: string) => void;
   onComplete?: () => void;
+  onHtmlPreview?: (html: string, filePath: string) => void;
 }
 
 /** Subset of Anthropic ContentBlockParam used for image/text blocks */
@@ -117,7 +119,9 @@ export class OpenClaudeHttpService implements OnModuleInit {
       return () => controller.abort();
     }
 
-    this.consumeStream(response.body, params, controller).catch(() => {});
+    // Maps tool_use_id → file_path for Edit calls on .html files
+    const pendingHtmlEdits = new Map<string, string>();
+    this.consumeStream(response.body, params, controller, pendingHtmlEdits).catch(() => {});
 
     return () => controller.abort();
   }
@@ -126,6 +130,7 @@ export class OpenClaudeHttpService implements OnModuleInit {
     body: ReadableStream<Uint8Array>,
     params: Parameters<OpenClaudeHttpService['streamChat']>[0],
     controller: AbortController,
+    pendingHtmlEdits: Map<string, string>,
   ) {
     const reader = body.getReader();
     const decoder = new TextDecoder();
@@ -141,7 +146,7 @@ export class OpenClaudeHttpService implements OnModuleInit {
         buffer = parts.pop() ?? '';
 
         for (const part of parts) {
-          await this.handleSseBlock(part, params, controller);
+          await this.handleSseBlock(part, params, controller, pendingHtmlEdits);
         }
       }
     } catch (err: any) {
@@ -157,6 +162,7 @@ export class OpenClaudeHttpService implements OnModuleInit {
     block: string,
     params: Parameters<OpenClaudeHttpService['streamChat']>[0],
     controller: AbortController,
+    pendingHtmlEdits: Map<string, string>,
   ) {
     let event = 'message';
     let dataLine = '';
@@ -194,6 +200,43 @@ export class OpenClaudeHttpService implements OnModuleInit {
           });
         } catch {
           // ignore fetch errors for tool replies
+        }
+        break;
+      }
+
+      case 'tool_start': {
+        try {
+          const args = JSON.parse(String(data.arguments_json ?? '{}'));
+          const filePath: string = args.file_path ?? '';
+
+          if (filePath.endsWith('.html') && params.callbacks.onHtmlPreview) {
+            if (data.tool_name === 'Write') {
+              // Write: conteúdo completo disponível nos argumentos
+              const content: string = args.content ?? '';
+              if (content) params.callbacks.onHtmlPreview(content, filePath);
+            } else if (data.tool_name === 'Edit') {
+              // Edit: guarda o caminho para ler o arquivo após o tool_result
+              const toolUseId = String(data.tool_use_id ?? '');
+              if (toolUseId) pendingHtmlEdits.set(toolUseId, filePath);
+            }
+          }
+        } catch {
+          // ignore malformed arguments
+        }
+        break;
+      }
+
+      case 'tool_result': {
+        const toolUseId = String(data.tool_use_id ?? '');
+        const pendingPath = pendingHtmlEdits.get(toolUseId);
+        if (pendingPath && !data.is_error && params.callbacks.onHtmlPreview) {
+          pendingHtmlEdits.delete(toolUseId);
+          try {
+            const updatedContent = await readFile(pendingPath, 'utf-8');
+            params.callbacks.onHtmlPreview(updatedContent, pendingPath);
+          } catch {
+            // arquivo pode não ser acessível — ignora silenciosamente
+          }
         }
         break;
       }
