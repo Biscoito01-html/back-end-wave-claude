@@ -7,9 +7,15 @@ import {
 const ALGORITHM = 'aes-256-gcm';
 
 function getKey(): Buffer {
-  const secret =
-    process.env.ENCRYPTION_SECRET ?? 'default-dev-secret-change-this!!';
-  return Buffer.from(secret.padEnd(32, '0').slice(0, 32), 'utf-8');
+  const secret = process.env.ENCRYPTION_SECRET;
+  if (!secret || secret.length !== 32) {
+    // Defesa em profundidade: assertEnvironmentReady() em main.ts ja valida
+    // isso no boot. Se chegamos aqui com secret invalido, e um bug grave.
+    throw new Error(
+      'ENCRYPTION_SECRET ausente ou invalido (deve ter exatamente 32 caracteres).',
+    );
+  }
+  return Buffer.from(secret, 'utf-8');
 }
 
 export function encryptValue(plainText: string): string {

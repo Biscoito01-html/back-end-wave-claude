@@ -6,7 +6,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
-import { join, sep as pathSep } from 'path';
+import { isAbsolute, join, sep as pathSep } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   OpenClaudeHttpService,
@@ -475,7 +475,12 @@ Ferramentas de leitura (Read, Grep, Glob, WebFetch, WebSearch) são permitidas p
       history: conversationHistory,
       workingDirectory: await this.workspace.resolveForUser(
         params.user.id,
-        params.workingDirectory || chatSession.workingDirectory || null,
+        params.workingDirectory ||
+          (await this.safeSessionWorkdir(
+            params.user.id,
+            chatSession.workingDirectory,
+          )) ||
+          null,
       ),
       model: effectiveModel,
       systemPrompt: effectiveSystemPrompt,
@@ -571,7 +576,7 @@ ${transcript}`;
 
     const compactWorkingDirectory = await this.workspace.resolveForUser(
       userId,
-      chatSession.workingDirectory || null,
+      await this.safeSessionWorkdir(userId, chatSession.workingDirectory),
     );
 
     const summary = await new Promise<string>((resolve, reject) => {
@@ -745,6 +750,38 @@ ${transcript}`;
 
     // Multi-modal path — image blocks first, then text block
     return [...imageBlocks, { type: 'text' as const, text: fullText }];
+  }
+
+  /**
+   * Retorna o workingDirectory do ChatSession somente se for um caminho
+   * absoluto valido dentro do workspace do usuario. Valores legados
+   * (relativos, absolutos fora do root, ou deixados por versoes antigas)
+   * sao ignorados para evitar warnings em `resolveForUser` e ForbiddenException.
+   */
+  private async safeSessionWorkdir(
+    userId: string,
+    raw: string | null | undefined,
+  ): Promise<string | null> {
+    const userRoot = await this.workspace.getUserRoot(userId);
+    let result: string | null;
+    let reason: string;
+    if (!raw || !raw.trim()) {
+      result = null;
+      reason = 'empty';
+    } else if (!isAbsolute(raw)) {
+      result = null;
+      reason = 'legacy-relative';
+    } else if (raw === userRoot || raw.startsWith(userRoot + pathSep)) {
+      result = raw;
+      reason = 'valid-absolute';
+    } else {
+      result = null;
+      reason = 'outside-root';
+    }
+    // #region agent log
+    fetch('http://127.0.0.1:7663/ingest/53ec07ba-5f17-47c7-8ec5-3fd963c44b2a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'3abb1f'},body:JSON.stringify({sessionId:'3abb1f',hypothesisId:'H6',location:'chat.service.ts:safeSessionWorkdir',message:'session workdir resolved',data:{userId:String(userId).slice(0,8),rawLen:raw?raw.length:0,rawSample:raw?raw.slice(0,64):null,reason,resultIsNull:result===null},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    return result;
   }
 
   private async ensureChatSession(conversationId: string, userId: string) {

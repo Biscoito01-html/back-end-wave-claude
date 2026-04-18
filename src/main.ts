@@ -5,8 +5,11 @@ import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { AppModule } from './app.module';
 import { PrismaService } from './prisma/prisma.service';
+import { assertEnvironmentReady } from './utils/assert-env';
 
 async function bootstrap() {
+  assertEnvironmentReady();
+
   const uploadDir = join(process.cwd(), 'uploads');
   if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
 
@@ -25,14 +28,6 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
-
-  const encSecret = process.env.ENCRYPTION_SECRET ?? '';
-  if (encSecret.length !== 32) {
-    console.error(
-      `[STARTUP ERROR] ENCRYPTION_SECRET deve ter exatamente 32 caracteres (atual: ${encSecret.length}). Defina a variável corretamente antes de iniciar.`,
-    );
-    process.exit(1);
-  }
 
   const prismaService = app.get(PrismaService);
   await prismaService.enableShutdownHooks(app);
