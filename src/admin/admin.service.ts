@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
+import { WorkspaceService } from '../workspace/workspace.service';
 import { encryptValue, decryptValue, keyPreview } from '../utils/encryption';
 
 export interface GlobalSettings {
@@ -18,7 +19,10 @@ export interface GlobalSettings {
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly workspace: WorkspaceService,
+  ) { }
 
   // ── Global settings ────────────────────────────────────────────────
   async getGlobalSettings(): Promise<GlobalSettings> {
@@ -58,6 +62,9 @@ export class AdminService {
       }
     }
     await Promise.all(ops);
+    if ('workingDirectory' in settings) {
+      this.workspace.invalidateCache();
+    }
     return this.getGlobalSettings();
   }
 
@@ -126,6 +133,9 @@ export class AdminService {
       },
       select: { id: true, email: true, name: true, role: true, createdAt: true },
     });
+
+    await this.workspace.ensureUserRoot(created.id);
+
     return { ...created, assignedKey: null };
   }
 
@@ -224,8 +234,12 @@ export class AdminService {
       this.prisma.userTokenUsage.deleteMany({ where: { userId: id } }),
       this.prisma.conversation.deleteMany({ where: { userId: id } }),
       this.prisma.project.deleteMany({ where: { userId: id } }),
+      this.prisma.userIntegration.deleteMany({ where: { userId: id } }),
       this.prisma.user.delete({ where: { id } }),
     ]);
+
+    // FS cleanup fora da transação (não é rollbackable)
+    await this.workspace.removeUserRoot(id);
 
     return { success: true };
   }

@@ -10,6 +10,8 @@ import { NotesModule } from './notes/notes.module';
 import { PagesModule } from './pages/pages.module';
 import { PermissionsModule } from './permissions/permissions.module';
 import { McpModule } from './mcp/mcp.module';
+import { WorkspaceModule } from './workspace/workspace.module';
+import { GithubModule } from './integrations/github.module';
 
 @Module({
   imports: [
@@ -17,6 +19,7 @@ import { McpModule } from './mcp/mcp.module';
       isGlobal: true,
     }),
     PrismaModule,
+    WorkspaceModule,
     AuthModule,
     ChatModule,
     UploadModule,
@@ -26,6 +29,7 @@ import { McpModule } from './mcp/mcp.module';
     PagesModule,
     PermissionsModule,
     McpModule,
+    GithubModule,
   ],
 })
 export class AppModule { }

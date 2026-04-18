@@ -4,10 +4,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
-import { join } from 'path';
+import { join, sep as pathSep } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   OpenClaudeHttpService,
@@ -16,6 +15,7 @@ import {
 import { AdminService } from '../admin/admin.service';
 import { PermissionsService } from '../permissions/permissions.service';
 import { McpService } from '../mcp/mcp.service';
+import { WorkspaceService } from '../workspace/workspace.service';
 import type { AuthUser } from '../auth/auth.types';
 import type { AttachmentDto } from './dto/chat-stream.dto';
 
@@ -59,10 +59,10 @@ export class ChatService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly httpService: OpenClaudeHttpService,
-    private readonly configService: ConfigService,
     private readonly adminService: AdminService,
     private readonly permissionsService: PermissionsService,
     private readonly mcpService: McpService,
+    private readonly workspace: WorkspaceService,
   ) { }
 
   async listConversations(userId: string) {
@@ -268,12 +268,25 @@ export class ChatService {
     const session = await this.prisma.chatSession.findUnique({
       where: { conversationId },
     });
+
+    // Expõe apenas o subpath dentro do workspace do usuário (nunca o absoluto).
+    let relativeSubpath: string | null = null;
+    if (session?.workingDirectory) {
+      const userRoot = await this.workspace.getUserRoot(userId);
+      const abs = session.workingDirectory;
+      if (abs === userRoot) {
+        relativeSubpath = null;
+      } else if (abs.startsWith(userRoot + pathSep)) {
+        relativeSubpath = abs.slice(userRoot.length + 1).split(pathSep).join('/');
+      }
+    }
+
     return {
       model: session?.model ?? null,
       systemPrompt: session?.systemPrompt ?? null,
       allowedTools: (session?.allowedTools as string[] | null) ?? null,
       maxTurns: session?.maxTurns ?? null,
-      workingDirectory: session?.workingDirectory ?? null,
+      workingDirectory: relativeSubpath,
       manualToolApproval: session?.manualToolApproval ?? false,
     };
   }
@@ -302,8 +315,11 @@ export class ChatService {
     if ('allowedTools' in settings)
       data.allowedTools = settings.allowedTools ?? Prisma.DbNull;
     if ('maxTurns' in settings) data.maxTurns = settings.maxTurns ?? null;
-    if ('workingDirectory' in settings)
-      data.workingDirectory = settings.workingDirectory ?? null;
+    if ('workingDirectory' in settings) {
+      data.workingDirectory = settings.workingDirectory
+        ? await this.workspace.resolveForUser(userId, settings.workingDirectory)
+        : null;
+    }
     if ('manualToolApproval' in settings)
       data.manualToolApproval = Boolean(settings.manualToolApproval);
 
@@ -319,7 +335,10 @@ export class ChatService {
       data: {
         conversationId,
         openclaudeSessionId: `conv-${conversationId}-${randomUUID().slice(0, 8)}`,
-        workingDirectory: (settings.workingDirectory as string) ?? this.resolveDefaultWorkdir(),
+        workingDirectory: await this.workspace.resolveForUser(
+          userId,
+          settings.workingDirectory ?? null,
+        ),
         model: settings.model ?? null,
         systemPrompt: settings.systemPrompt ?? null,
         allowedTools: settings.allowedTools ?? undefined,
@@ -344,7 +363,10 @@ export class ChatService {
   }) {
     await this.assertConversationOwnership(params.user.id, params.conversationId);
 
-    const chatSession = await this.ensureChatSession(params.conversationId);
+    const chatSession = await this.ensureChatSession(
+      params.conversationId,
+      params.user.id,
+    );
 
     // Load global defaults as lowest-priority fallback
     const globalSettings = await this.adminService.getGlobalSettings();
@@ -451,10 +473,10 @@ Ferramentas de leitura (Read, Grep, Glob, WebFetch, WebSearch) são permitidas p
       message: finalMessage,
       contentBlocks: finalBlocks,
       history: conversationHistory,
-      workingDirectory:
-        params.workingDirectory ||
-        chatSession.workingDirectory ||
-        this.resolveDefaultWorkdir(),
+      workingDirectory: await this.workspace.resolveForUser(
+        params.user.id,
+        params.workingDirectory || chatSession.workingDirectory || null,
+      ),
       model: effectiveModel,
       systemPrompt: effectiveSystemPrompt,
       appendSystemPrompt: planAppendPrompt,
@@ -503,7 +525,7 @@ Ferramentas de leitura (Read, Grep, Glob, WebFetch, WebSearch) são permitidas p
    */
   async compactConversation(userId: string, conversationId: string) {
     await this.assertConversationOwnership(userId, conversationId);
-    const chatSession = await this.ensureChatSession(conversationId);
+    const chatSession = await this.ensureChatSession(conversationId, userId);
 
     const messages = await this.prisma.message.findMany({
       where: { conversationId },
@@ -547,14 +569,18 @@ ${transcript}`;
       globalSettings.model ||
       undefined;
 
+    const compactWorkingDirectory = await this.workspace.resolveForUser(
+      userId,
+      chatSession.workingDirectory || null,
+    );
+
     const summary = await new Promise<string>((resolve, reject) => {
       let accumulated = '';
       this.httpService
         .streamChat({
           sessionId: `compact-${conversationId}-${Date.now()}`,
           message: summaryInstruction,
-          workingDirectory:
-            chatSession.workingDirectory || this.resolveDefaultWorkdir(),
+          workingDirectory: compactWorkingDirectory,
           model: effectiveModel,
           allowedTools: [],
           apiKey: userConfig.apiKey ?? undefined,
@@ -721,7 +747,7 @@ ${transcript}`;
     return [...imageBlocks, { type: 'text' as const, text: fullText }];
   }
 
-  private async ensureChatSession(conversationId: string) {
+  private async ensureChatSession(conversationId: string, userId: string) {
     const existing = await this.prisma.chatSession.findUnique({
       where: { conversationId },
     });
@@ -731,13 +757,9 @@ ${transcript}`;
       data: {
         conversationId,
         openclaudeSessionId: `conv-${conversationId}-${randomUUID().slice(0, 8)}`,
-        workingDirectory: this.resolveDefaultWorkdir(),
+        workingDirectory: await this.workspace.getUserRoot(userId),
       },
     });
-  }
-
-  private resolveDefaultWorkdir() {
-    return this.configService.get<string>('OPENCLAUDE_WORKDIR') || process.cwd();
   }
 
   private async assertConversationOwnership(userId: string, conversationId: string) {

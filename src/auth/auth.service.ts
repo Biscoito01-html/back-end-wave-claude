@@ -6,6 +6,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
+import { WorkspaceService } from '../workspace/workspace.service';
 import type { LoginDto } from './dto/login.dto';
 import type { RegisterDto } from './dto/register.dto';
 
@@ -14,6 +15,7 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly workspace: WorkspaceService,
   ) { }
 
   async register(dto: RegisterDto): Promise<{ access_token: string }> {
@@ -39,6 +41,8 @@ export class AuthService {
         role,
       },
     });
+
+    await this.workspace.ensureUserRoot(user.id);
 
     return { access_token: this.signToken(user.id, user.email, user.role) };
   }

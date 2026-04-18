@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -28,6 +29,40 @@ import { CreateConversationDto } from './dto/create-conversation.dto';
 import { UpdateConversationDto } from './dto/update-conversation.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { ChatStreamDto } from './dto/chat-stream.dto';
+
+/**
+ * Aceita subpath relativo dentro do workspace do usuario. Rejeita:
+ *  - strings com segmento `..`
+ *  - caminhos absolutos (Unix `/` ou Windows `C:\` / `\\server`)
+ *
+ * Retorna a string normalizada (trim) ou null.
+ */
+function sanitizeWorkspaceSubpath(
+  value: string | null | undefined,
+): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  if (
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('\\') ||
+    /^[a-zA-Z]:[\\/]/.test(trimmed)
+  ) {
+    throw new BadRequestException(
+      'Caminho absoluto nao permitido. Use um subpath relativo ao seu workspace.',
+    );
+  }
+
+  const segments = trimmed.split(/[\\/]/);
+  if (segments.some((s) => s === '..')) {
+    throw new BadRequestException(
+      'Segmento ".." nao permitido no caminho do workspace.',
+    );
+  }
+
+  return trimmed;
+}
 
 class UpdateSettingsDto {
   @IsOptional()
@@ -120,10 +155,16 @@ export class ChatController {
     @Param('id') conversationId: string,
     @Body() dto: UpdateSettingsDto,
   ) {
+    const safeDto = {
+      ...dto,
+      ...('workingDirectory' in dto
+        ? { workingDirectory: sanitizeWorkspaceSubpath(dto.workingDirectory) }
+        : {}),
+    };
     return this.chatService.updateConversationSettings(
       user.id,
       conversationId,
-      dto,
+      safeDto,
     );
   }
 
@@ -226,6 +267,10 @@ export class ChatController {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
+    const safeWorkingDirectory = sanitizeWorkspaceSubpath(
+      dto.workingDirectory ?? null,
+    );
+
     let streamedText = '';
     const cleanup = await this.chatService.streamAssistantReply({
       user,
@@ -233,7 +278,7 @@ export class ChatController {
       message: dto.message,
       attachments: dto.attachments,
       mode: dto.mode ?? 'agent',
-      workingDirectory: dto.workingDirectory,
+      workingDirectory: safeWorkingDirectory ?? undefined,
       model: dto.model,
       systemPrompt: dto.systemPrompt,
       allowedTools: dto.allowedTools,
