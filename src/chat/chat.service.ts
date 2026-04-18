@@ -14,7 +14,6 @@ import {
   type ContentBlock,
 } from '../openclaude/openclaude-http.service';
 import { AdminService } from '../admin/admin.service';
-import { ProvidersService } from '../providers/providers.service';
 import { PermissionsService } from '../permissions/permissions.service';
 import { McpService } from '../mcp/mcp.service';
 import type { AuthUser } from '../auth/auth.types';
@@ -62,7 +61,6 @@ export class ChatService {
     private readonly httpService: OpenClaudeHttpService,
     private readonly configService: ConfigService,
     private readonly adminService: AdminService,
-    private readonly providersService: ProvidersService,
     private readonly permissionsService: PermissionsService,
     private readonly mcpService: McpService,
   ) { }
@@ -351,24 +349,17 @@ export class ChatService {
     // Load global defaults as lowest-priority fallback
     const globalSettings = await this.adminService.getGlobalSettings();
 
-    // Fetch per-user key + preferred model
+    // Fetch per-user key + preferred model (admin-managed ApiKey)
     const userConfig = await this.adminService.getUserApiKeyConfig(params.user.id);
 
-    // Provider profile do usuário (preferido) — se existir um marcado como default,
-    // sobrescreve apiKey/baseUrl/defaultModel vindos do ApiKey legado.
-    const activeProfile = await this.providersService.resolveActiveProfile(
-      params.user.id,
-    );
+    const effectiveApiKey = userConfig.apiKey ?? undefined;
+    const effectiveBaseUrl = undefined;
+    const effectiveExtraHeaders = undefined;
 
-    const effectiveApiKey = activeProfile?.apiKey ?? userConfig.apiKey ?? undefined;
-    const effectiveBaseUrl = activeProfile?.baseUrl ?? undefined;
-    const effectiveExtraHeaders = activeProfile?.extraHeaders ?? undefined;
-
-    // Priority: request param > session setting > profile default > user preferred model > global default
+    // Priority: request param > session setting > user preferred model > global default
     const effectiveModel =
       params.model ||
       chatSession.model ||
-      activeProfile?.defaultModel ||
       userConfig.preferredModelId ||
       globalSettings.model ||
       undefined;

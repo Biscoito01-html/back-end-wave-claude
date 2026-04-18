@@ -9,9 +9,21 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { IsArray, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsArray,
+  IsEmail,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+  MinLength,
+} from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
+import { CurrentUser } from '../auth/current-user.decorator';
+import type { AuthUser } from '../auth/auth.types';
 import { AdminService } from './admin.service';
 
 class UpdateGlobalSettingsDto {
@@ -26,9 +38,30 @@ class UpdateUserRoleDto {
   @IsIn(['user', 'admin']) role!: 'user' | 'admin';
 }
 
+class CreateUserDto {
+  @IsEmail() email!: string;
+  @IsString() @MinLength(6) password!: string;
+  @IsOptional() @IsString() name?: string | null;
+  @IsOptional() @IsIn(['user', 'admin']) role?: 'user' | 'admin';
+}
+
+class UpdateUserDto {
+  @IsOptional() @IsEmail() email?: string;
+  @IsOptional() @IsString() name?: string | null;
+  @IsOptional() @IsString() password?: string | null;
+  @IsOptional() @IsIn(['user', 'admin']) role?: 'user' | 'admin';
+}
+
 class CreateApiKeyDto {
   @IsString() label!: string;
   @IsString() apiKey!: string;
+  @IsOptional() @IsString() assignedUserId?: string | null;
+  @IsOptional() @IsString() preferredModelId?: string | null;
+}
+
+class UpdateApiKeyDto {
+  @IsOptional() @IsString() label?: string;
+  @IsOptional() @IsString() apiKey?: string | null;
 }
 
 class AssignApiKeyDto {
@@ -57,6 +90,31 @@ export class AdminController {
   @Get('users')
   listUsers() { return this.adminService.listUsers(); }
 
+  @Post('users')
+  createUser(@Body() dto: CreateUserDto) {
+    return this.adminService.createUser({
+      email: dto.email,
+      password: dto.password,
+      name: dto.name ?? null,
+      role: dto.role,
+    });
+  }
+
+  @Patch('users/:id')
+  updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto) {
+    return this.adminService.updateUser(id, {
+      email: dto.email,
+      name: dto.name,
+      password: dto.password ?? null,
+      role: dto.role,
+    });
+  }
+
+  @Delete('users/:id')
+  deleteUser(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
+    return this.adminService.deleteUser(id, actor.id);
+  }
+
   @Patch('users/:id/role')
   updateUserRole(@Param('id') id: string, @Body() dto: UpdateUserRoleDto) {
     return this.adminService.updateUserRole(id, dto.role);
@@ -68,7 +126,18 @@ export class AdminController {
 
   @Post('api-keys')
   createApiKey(@Body() dto: CreateApiKeyDto) {
-    return this.adminService.createApiKey(dto.label, dto.apiKey);
+    return this.adminService.createApiKey(dto.label, dto.apiKey, {
+      assignedUserId: dto.assignedUserId ?? null,
+      preferredModelId: dto.preferredModelId ?? null,
+    });
+  }
+
+  @Patch('api-keys/:id')
+  updateApiKey(@Param('id') id: string, @Body() dto: UpdateApiKeyDto) {
+    return this.adminService.updateApiKey(id, {
+      label: dto.label,
+      plainKey: dto.apiKey ?? null,
+    });
   }
 
   @Delete('api-keys/:id')

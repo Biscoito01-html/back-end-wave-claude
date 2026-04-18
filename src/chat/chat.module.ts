@@ -3,7 +3,6 @@ import { ChatController } from './chat.controller';
 import { ChatService } from './chat.service';
 import { OpenClaudeModule } from '../openclaude/openclaude.module';
 import { AdminModule } from '../admin/admin.module';
-import { ProvidersModule } from '../providers/providers.module';
 import { PermissionsModule } from '../permissions/permissions.module';
 import { McpModule } from '../mcp/mcp.module';
 
@@ -11,7 +10,6 @@ import { McpModule } from '../mcp/mcp.module';
   imports: [
     OpenClaudeModule,
     AdminModule,
-    ProvidersModule,
     PermissionsModule,
     McpModule,
   ],

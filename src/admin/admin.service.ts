@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { encryptValue, decryptValue, keyPreview } from '../utils/encryption';
 
@@ -94,6 +100,136 @@ export class AdminService {
     return this.prisma.user.update({ where: { id }, data: { role } });
   }
 
+  async createUser(dto: {
+    email: string;
+    password: string;
+    name?: string | null;
+    role?: 'user' | 'admin';
+  }) {
+    const email = dto.email.trim().toLowerCase();
+    if (!email) throw new BadRequestException('Email obrigatório.');
+    if (!dto.password || dto.password.length < 6) {
+      throw new BadRequestException('Senha deve ter pelo menos 6 caracteres.');
+    }
+
+    const existing = await this.prisma.user.findUnique({ where: { email } });
+    if (existing) throw new ConflictException('Email já cadastrado.');
+
+    const passwordHash = await bcrypt.hash(dto.password, 12);
+
+    const created = await this.prisma.user.create({
+      data: {
+        email,
+        passwordHash,
+        name: dto.name ?? null,
+        role: dto.role ?? 'user',
+      },
+      select: { id: true, email: true, name: true, role: true, createdAt: true },
+    });
+    return { ...created, assignedKey: null };
+  }
+
+  async updateUser(
+    id: string,
+    dto: {
+      email?: string;
+      name?: string | null;
+      password?: string | null;
+      role?: 'user' | 'admin';
+    },
+  ) {
+    const target = await this.prisma.user.findUnique({ where: { id } });
+    if (!target) throw new NotFoundException('Usuário não encontrado.');
+
+    const data: {
+      email?: string;
+      name?: string | null;
+      passwordHash?: string;
+      role?: string;
+    } = {};
+
+    if (dto.email !== undefined) {
+      const newEmail = dto.email.trim().toLowerCase();
+      if (!newEmail) throw new BadRequestException('Email não pode ser vazio.');
+      if (newEmail !== target.email) {
+        const clash = await this.prisma.user.findUnique({ where: { email: newEmail } });
+        if (clash) throw new ConflictException('Email já em uso por outro usuário.');
+        data.email = newEmail;
+      }
+    }
+
+    if (dto.name !== undefined) {
+      data.name = dto.name ?? null;
+    }
+
+    if (dto.password !== undefined && dto.password !== null && dto.password !== '') {
+      if (dto.password.length < 6) {
+        throw new BadRequestException('Senha deve ter pelo menos 6 caracteres.');
+      }
+      data.passwordHash = await bcrypt.hash(dto.password, 12);
+    }
+
+    if (dto.role !== undefined && dto.role !== target.role) {
+      if (dto.role === 'user' && target.role === 'admin') {
+        const adminCount = await this.prisma.user.count({ where: { role: 'admin' } });
+        if (adminCount <= 1) {
+          throw new BadRequestException('Não é possível rebaixar o único administrador.');
+        }
+      }
+      data.role = dto.role;
+    }
+
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('Nada para atualizar.');
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id },
+      data,
+      select: { id: true, email: true, name: true, role: true, createdAt: true },
+    });
+
+    const key = await this.prisma.apiKey.findFirst({
+      where: { assignedUserId: id },
+      select: { id: true, label: true, keyPreview: true, preferredModelId: true },
+    });
+    return { ...updated, assignedKey: key ?? null };
+  }
+
+  async deleteUser(id: string, actorUserId: string) {
+    if (id === actorUserId) {
+      throw new BadRequestException('Você não pode excluir a si mesmo.');
+    }
+    const target = await this.prisma.user.findUnique({ where: { id } });
+    if (!target) throw new NotFoundException('Usuário não encontrado.');
+
+    if (target.role === 'admin') {
+      const adminCount = await this.prisma.user.count({ where: { role: 'admin' } });
+      if (adminCount <= 1) {
+        throw new BadRequestException('Não é possível excluir o único administrador.');
+      }
+    }
+
+    // Cascata manual — limpa todos os dados vinculados em uma transação
+    await this.prisma.$transaction([
+      this.prisma.apiKey.updateMany({
+        where: { assignedUserId: id },
+        data: { assignedUserId: null },
+      }),
+      this.prisma.toolAuditLog.deleteMany({ where: { userId: id } }),
+      this.prisma.toolPermissionRule.deleteMany({ where: { userId: id } }),
+      this.prisma.mcpServer.deleteMany({ where: { userId: id } }),
+      this.prisma.contextNote.deleteMany({ where: { userId: id } }),
+      this.prisma.page.deleteMany({ where: { userId: id } }),
+      this.prisma.userTokenUsage.deleteMany({ where: { userId: id } }),
+      this.prisma.conversation.deleteMany({ where: { userId: id } }),
+      this.prisma.project.deleteMany({ where: { userId: id } }),
+      this.prisma.user.delete({ where: { id } }),
+    ]);
+
+    return { success: true };
+  }
+
   // ── API Keys ───────────────────────────────────────────────────────
   async listApiKeys() {
     const keys = await this.prisma.apiKey.findMany({
@@ -124,12 +260,34 @@ export class AdminService {
     }));
   }
 
-  async createApiKey(label: string, plainKey: string) {
+  async createApiKey(
+    label: string,
+    plainKey: string,
+    options?: { assignedUserId?: string | null; preferredModelId?: string | null },
+  ) {
     if (!plainKey.trim()) throw new BadRequestException('A chave não pode ser vazia.');
     const encrypted = encryptValue(plainKey.trim());
     const preview = keyPreview(plainKey.trim());
-    return this.prisma.apiKey.create({
-      data: { label, encryptedKey: encrypted, keyPreview: preview },
+
+    const assignedUserId = options?.assignedUserId ?? null;
+    if (assignedUserId) {
+      const user = await this.prisma.user.findUnique({ where: { id: assignedUserId } });
+      if (!user) throw new NotFoundException('Usuário não encontrado.');
+      // remover qualquer chave já atribuída a este usuário
+      await this.prisma.apiKey.updateMany({
+        where: { assignedUserId },
+        data: { assignedUserId: null },
+      });
+    }
+
+    const created = await this.prisma.apiKey.create({
+      data: {
+        label,
+        encryptedKey: encrypted,
+        keyPreview: preview,
+        assignedUserId,
+        preferredModelId: options?.preferredModelId ?? null,
+      },
       select: {
         id: true,
         label: true,
@@ -139,6 +297,57 @@ export class AdminService {
         createdAt: true,
       },
     });
+
+    return this.attachAssignedUser(created);
+  }
+
+  async updateApiKey(
+    id: string,
+    dto: { label?: string; plainKey?: string | null },
+  ) {
+    const key = await this.prisma.apiKey.findUnique({ where: { id } });
+    if (!key) throw new NotFoundException('Chave não encontrada.');
+
+    const data: { label?: string; encryptedKey?: string; keyPreview?: string } = {};
+    if (dto.label !== undefined && dto.label !== null) {
+      if (!dto.label.trim()) {
+        throw new BadRequestException('Label não pode ser vazio.');
+      }
+      data.label = dto.label.trim();
+    }
+    if (dto.plainKey !== undefined && dto.plainKey !== null && dto.plainKey.trim() !== '') {
+      data.encryptedKey = encryptValue(dto.plainKey.trim());
+      data.keyPreview = keyPreview(dto.plainKey.trim());
+    }
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('Nada para atualizar.');
+    }
+
+    const updated = await this.prisma.apiKey.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        label: true,
+        keyPreview: true,
+        assignedUserId: true,
+        preferredModelId: true,
+        createdAt: true,
+      },
+    });
+
+    return this.attachAssignedUser(updated);
+  }
+
+  private async attachAssignedUser<
+    T extends { assignedUserId: string | null },
+  >(record: T) {
+    if (!record.assignedUserId) return { ...record, assignedUser: null };
+    const user = await this.prisma.user.findUnique({
+      where: { id: record.assignedUserId },
+      select: { id: true, email: true, name: true },
+    });
+    return { ...record, assignedUser: user ?? null };
   }
 
   async deleteApiKey(id: string) {

@@ -170,24 +170,6 @@ model ToolAuditLog {
   @@map("tool_audit_logs")
 }
 
-model ProviderProfile {
-  id            String   @id @default(uuid())
-  userId        String   @map("user_id")
-  name          String
-  provider      String
-  baseUrl       String?  @map("base_url")
-  encryptedKey  String   @map("encrypted_key")
-  keyPreview    String   @map("key_preview")
-  defaultModel  String?  @map("default_model")
-  isDefault     Boolean  @default(false) @map("is_default")
-  extraHeaders  Json?    @map("extra_headers")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  @@index([userId])
-  @@map("provider_profiles")
-}
-
 model ToolPermissionRule {
   id             String   @id @default(uuid())
   userId         String   @map("user_id")
