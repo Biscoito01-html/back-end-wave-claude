@@ -8,6 +8,9 @@ import { AdminModule } from './admin/admin.module';
 import { ProjectsModule } from './projects/projects.module';
 import { NotesModule } from './notes/notes.module';
 import { PagesModule } from './pages/pages.module';
+import { ProvidersModule } from './providers/providers.module';
+import { PermissionsModule } from './permissions/permissions.module';
+import { McpModule } from './mcp/mcp.module';
 
 @Module({
   imports: [
@@ -22,6 +25,9 @@ import { PagesModule } from './pages/pages.module';
     ProjectsModule,
     NotesModule,
     PagesModule,
+    ProvidersModule,
+    PermissionsModule,
+    McpModule,
   ],
 })
 export class AppModule { }

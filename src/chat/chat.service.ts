@@ -14,6 +14,9 @@ import {
   type ContentBlock,
 } from '../openclaude/openclaude-http.service';
 import { AdminService } from '../admin/admin.service';
+import { ProvidersService } from '../providers/providers.service';
+import { PermissionsService } from '../permissions/permissions.service';
+import { McpService } from '../mcp/mcp.service';
 import type { AuthUser } from '../auth/auth.types';
 import type { AttachmentDto } from './dto/chat-stream.dto';
 
@@ -27,6 +30,22 @@ type StreamCallbacks = {
   onError: (message: string) => void;
   onComplete?: () => void;
   onHtmlPreview?: (html: string, filePath: string) => void;
+  onToolStart?: (payload: {
+    toolName: string;
+    argumentsJson: string;
+    toolUseId: string | null;
+  }) => void;
+  onToolResult?: (payload: {
+    toolName: string;
+    toolUseId: string;
+    output: string;
+    isError: boolean;
+  }) => void;
+  onActionRequired?: (payload: {
+    promptId: string;
+    toolName: string;
+    argumentsJson: string;
+  }) => void;
 };
 
 const IMAGE_MIME_TYPES = new Set([
@@ -43,6 +62,9 @@ export class ChatService {
     private readonly httpService: OpenClaudeHttpService,
     private readonly configService: ConfigService,
     private readonly adminService: AdminService,
+    private readonly providersService: ProvidersService,
+    private readonly permissionsService: PermissionsService,
+    private readonly mcpService: McpService,
   ) { }
 
   async listConversations(userId: string) {
@@ -93,6 +115,87 @@ export class ChatService {
       where: { conversationId },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  async exportConversation(
+    userId: string,
+    conversationId: string,
+    format: 'markdown' | 'json' = 'markdown',
+  ): Promise<{ filename: string; mimeType: string; content: string }> {
+    await this.assertConversationOwnership(userId, conversationId);
+    const conv = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
+    if (!conv) {
+      throw new NotFoundException('Conversa não encontrada');
+    }
+    const messages = await this.prisma.message.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const safeTitle = conv.title
+      .replace(/[^\w\d\- ]+/g, '')
+      .trim()
+      .replace(/\s+/g, '-')
+      .slice(0, 60) || 'conversa';
+
+    if (format === 'json') {
+      const payload = {
+        id: conv.id,
+        title: conv.title,
+        createdAt: conv.createdAt,
+        updatedAt: conv.updatedAt,
+        messages: messages.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          attachments: m.attachments ?? null,
+          tokensUsed: m.tokensUsed ?? null,
+          createdAt: m.createdAt,
+        })),
+      };
+      return {
+        filename: `${safeTitle}.json`,
+        mimeType: 'application/json; charset=utf-8',
+        content: JSON.stringify(payload, null, 2),
+      };
+    }
+
+    const md: string[] = [];
+    md.push(`# ${conv.title}`);
+    md.push('');
+    md.push(`- **ID**: \`${conv.id}\``);
+    md.push(`- **Criada em**: ${conv.createdAt.toISOString()}`);
+    md.push(`- **Atualizada em**: ${conv.updatedAt.toISOString()}`);
+    md.push(`- **Mensagens**: ${messages.length}`);
+    md.push('');
+    md.push('---');
+    md.push('');
+
+    for (const m of messages) {
+      const label = m.role === 'user' ? '👤 Usuário' : '🤖 Assistente';
+      md.push(`## ${label} — ${m.createdAt.toISOString()}`);
+      md.push('');
+      md.push(m.content || '*(vazio)*');
+      md.push('');
+      if (m.attachments && Array.isArray(m.attachments) && m.attachments.length > 0) {
+        md.push('**Anexos:**');
+        for (const a of m.attachments as Array<Record<string, unknown>>) {
+          const name = String(a.name ?? a.filename ?? a.path ?? 'arquivo');
+          md.push(`- ${name}`);
+        }
+        md.push('');
+      }
+      md.push('---');
+      md.push('');
+    }
+
+    return {
+      filename: `${safeTitle}.md`,
+      mimeType: 'text/markdown; charset=utf-8',
+      content: md.join('\n'),
+    };
   }
 
   async createMessage(
@@ -173,6 +276,7 @@ export class ChatService {
       allowedTools: (session?.allowedTools as string[] | null) ?? null,
       maxTurns: session?.maxTurns ?? null,
       workingDirectory: session?.workingDirectory ?? null,
+      manualToolApproval: session?.manualToolApproval ?? false,
     };
   }
 
@@ -185,6 +289,7 @@ export class ChatService {
       allowedTools?: string[] | null;
       maxTurns?: number | null;
       workingDirectory?: string | null;
+      manualToolApproval?: boolean;
     },
   ) {
     await this.assertConversationOwnership(userId, conversationId);
@@ -201,6 +306,8 @@ export class ChatService {
     if ('maxTurns' in settings) data.maxTurns = settings.maxTurns ?? null;
     if ('workingDirectory' in settings)
       data.workingDirectory = settings.workingDirectory ?? null;
+    if ('manualToolApproval' in settings)
+      data.manualToolApproval = Boolean(settings.manualToolApproval);
 
     if (session) {
       return this.prisma.chatSession.update({
@@ -219,6 +326,7 @@ export class ChatService {
         systemPrompt: settings.systemPrompt ?? null,
         allowedTools: settings.allowedTools ?? undefined,
         maxTurns: settings.maxTurns ?? null,
+        manualToolApproval: Boolean(settings.manualToolApproval ?? false),
       },
     });
   }
@@ -246,18 +354,47 @@ export class ChatService {
     // Fetch per-user key + preferred model
     const userConfig = await this.adminService.getUserApiKeyConfig(params.user.id);
 
-    // Priority: request param > session setting > user preferred model > global default
+    // Provider profile do usuário (preferido) — se existir um marcado como default,
+    // sobrescreve apiKey/baseUrl/defaultModel vindos do ApiKey legado.
+    const activeProfile = await this.providersService.resolveActiveProfile(
+      params.user.id,
+    );
+
+    const effectiveApiKey = activeProfile?.apiKey ?? userConfig.apiKey ?? undefined;
+    const effectiveBaseUrl = activeProfile?.baseUrl ?? undefined;
+    const effectiveExtraHeaders = activeProfile?.extraHeaders ?? undefined;
+
+    // Priority: request param > session setting > profile default > user preferred model > global default
     const effectiveModel =
       params.model ||
       chatSession.model ||
+      activeProfile?.defaultModel ||
       userConfig.preferredModelId ||
       globalSettings.model ||
       undefined;
-    const effectiveSystemPrompt =
+    const baseSystemPrompt =
       params.systemPrompt ||
       chatSession.systemPrompt ||
       globalSettings.systemPrompt ||
       undefined;
+
+    // Inject active memory notes (ContextNote.isActive) into the system prompt
+    const activeNotes = await this.prisma.contextNote.findMany({
+      where: { userId: params.user.id, isActive: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 20,
+    });
+
+    let effectiveSystemPrompt = baseSystemPrompt;
+    if (activeNotes.length > 0) {
+      const notesBlock = activeNotes
+        .map((n) => `### ${n.title}\n${n.content}`)
+        .join('\n\n');
+      const memorySection = `<user_memory>\nInformações persistentes do usuário. Use-as quando relevante.\n\n${notesBlock}\n</user_memory>`;
+      effectiveSystemPrompt = baseSystemPrompt
+        ? `${memorySection}\n\n${baseSystemPrompt}`
+        : memorySection;
+    }
     const effectiveAllowedTools =
       params.allowedTools ??
       (chatSession.allowedTools as string[] | null) ??
@@ -332,7 +469,13 @@ Ferramentas de leitura (Read, Grep, Glob, WebFetch, WebSearch) são permitidas p
       appendSystemPrompt: planAppendPrompt,
       allowedTools: finalAllowedTools,
       maxTurns: effectiveMaxTurns,
-      apiKey: userConfig.apiKey ?? undefined,
+      apiKey: effectiveApiKey,
+      baseUrl: effectiveBaseUrl,
+      extraHeaders: effectiveExtraHeaders,
+      mcpServers: await this.mcpService
+        .resolveEnabledForRequest(params.user.id)
+        .catch(() => []),
+      manualToolApproval: chatSession.manualToolApproval === true,
       callbacks: {
         onToken: params.onStream.onToken,
         onDone: async (payload) => {
@@ -341,8 +484,191 @@ Ferramentas de leitura (Read, Grep, Glob, WebFetch, WebSearch) são permitidas p
         onError: params.onStream.onError,
         onComplete: params.onStream.onComplete,
         onHtmlPreview: params.onStream.onHtmlPreview,
+        onToolStart: params.onStream.onToolStart,
+        onToolResult: params.onStream.onToolResult,
+        onActionRequired: params.onStream.onActionRequired,
+        resolvePermission: async ({ toolName }) => {
+          const decision = await this.permissionsService.resolveDecision(
+            params.user.id,
+            params.conversationId,
+            toolName,
+          );
+          await this.permissionsService.logDecision({
+            userId: params.user.id,
+            conversationId: params.conversationId,
+            toolName,
+            decision,
+          });
+          return decision;
+        },
       },
     });
+  }
+
+  /**
+   * Compacta a conversa gerando um resumo com o modelo configurado,
+   * substituindo o histórico do DB por uma única mensagem com o resumo
+   * e limpando o cache de sessionHistory no Bun.
+   */
+  async compactConversation(userId: string, conversationId: string) {
+    await this.assertConversationOwnership(userId, conversationId);
+    const chatSession = await this.ensureChatSession(conversationId);
+
+    const messages = await this.prisma.message.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (messages.length < 2) {
+      return {
+        summary: '',
+        messagesRemoved: 0,
+        skipped: true,
+        reason: 'Conversa muito curta para compactar',
+      };
+    }
+
+    const transcript = messages
+      .map((m) => `${m.role === 'user' ? 'USUÁRIO' : 'ASSISTENTE'}:\n${m.content}`)
+      .join('\n\n---\n\n');
+
+    const summaryInstruction = `Você recebeu uma transcrição abaixo. Produza um RESUMO em português que preserve todo o contexto essencial para continuar a conversa.
+
+Inclua:
+1. Objetivo do usuário e intenção geral
+2. Decisões técnicas tomadas e opções descartadas
+3. Arquivos criados, modificados ou analisados e principais mudanças
+4. Tarefas concluídas, em andamento e pendentes
+5. Dados, IDs, paths ou parâmetros importantes citados
+6. Erros encontrados e como foram resolvidos
+
+Formato: markdown com seções. Seja conciso mas completo. NÃO invente informações.
+
+Transcrição:
+
+${transcript}`;
+
+    const globalSettings = await this.adminService.getGlobalSettings();
+    const userConfig = await this.adminService.getUserApiKeyConfig(userId);
+    const effectiveModel =
+      chatSession.model ||
+      userConfig.preferredModelId ||
+      globalSettings.model ||
+      undefined;
+
+    const summary = await new Promise<string>((resolve, reject) => {
+      let accumulated = '';
+      this.httpService
+        .streamChat({
+          sessionId: `compact-${conversationId}-${Date.now()}`,
+          message: summaryInstruction,
+          workingDirectory:
+            chatSession.workingDirectory || this.resolveDefaultWorkdir(),
+          model: effectiveModel,
+          allowedTools: [],
+          apiKey: userConfig.apiKey ?? undefined,
+          callbacks: {
+            onToken: (chunk) => {
+              accumulated += chunk;
+            },
+            onDone: async ({ fullText }) => {
+              resolve((fullText || accumulated).trim());
+            },
+            onError: (msg) => reject(new Error(msg)),
+          },
+        })
+        .catch(reject);
+    });
+
+    if (!summary) {
+      throw new Error('Falha ao gerar resumo — resposta vazia do modelo');
+    }
+
+    const summaryBody = `**[Resumo compactado da conversa]**\n\n${summary}`;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.message.deleteMany({ where: { conversationId } });
+      await tx.message.create({
+        data: {
+          conversationId,
+          role: 'assistant',
+          content: summaryBody,
+        },
+      });
+    });
+
+    await this.httpService.resetSession(chatSession.openclaudeSessionId);
+
+    return {
+      summary: summaryBody,
+      messagesRemoved: messages.length,
+      skipped: false,
+    };
+  }
+
+  /**
+   * Apaga a mensagem informada e todas as posteriores. Útil para "voltar" no
+   * tempo e reescrever a partir de um ponto anterior da conversa.
+   * Retorna a conversa resultante (últimas mensagens restantes).
+   */
+  async rewindConversation(
+    userId: string,
+    conversationId: string,
+    fromMessageId: string,
+  ) {
+    await this.assertConversationOwnership(userId, conversationId);
+
+    const target = await this.prisma.message.findUnique({
+      where: { id: fromMessageId },
+    });
+    if (!target || target.conversationId !== conversationId) {
+      throw new NotFoundException('Mensagem não encontrada nesta conversa');
+    }
+
+    const deleted = await this.prisma.message.deleteMany({
+      where: {
+        conversationId,
+        createdAt: { gte: target.createdAt },
+      },
+    });
+
+    // Limpa cache de sessionHistory no Bun para que próxima request use DB.
+    const chatSession = await this.prisma.chatSession.findUnique({
+      where: { conversationId },
+    });
+    if (chatSession) {
+      await this.httpService.resetSession(chatSession.openclaudeSessionId);
+    }
+
+    const content = target.content;
+    const role = target.role;
+
+    return {
+      deletedCount: deleted.count,
+      rewoundFromRole: role,
+      rewoundContent: content,
+    };
+  }
+
+  async replyToolApproval(
+    userId: string,
+    conversationId: string,
+    promptId: string,
+    approved: boolean,
+  ) {
+    await this.assertConversationOwnership(userId, conversationId);
+    const session = await this.prisma.chatSession.findUnique({
+      where: { conversationId },
+    });
+    if (!session) {
+      throw new NotFoundException('Sessão de chat não encontrada');
+    }
+    await this.httpService.replyToolInput(
+      session.openclaudeSessionId,
+      promptId,
+      approved ? 'y' : 'n',
+    );
+    return { ok: true };
   }
 
   /**

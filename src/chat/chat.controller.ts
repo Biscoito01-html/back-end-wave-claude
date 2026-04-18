@@ -6,11 +6,13 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Res,
   UseGuards,
 } from '@nestjs/common';
 import {
   IsArray,
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -50,6 +52,23 @@ class UpdateSettingsDto {
   @IsOptional()
   @IsString()
   workingDirectory?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  manualToolApproval?: boolean;
+}
+
+class ToolApprovalDto {
+  @IsString()
+  promptId!: string;
+
+  @IsBoolean()
+  approved!: boolean;
+}
+
+class RewindDto {
+  @IsString()
+  fromMessageId!: string;
 }
 
 @UseGuards(JwtAuthGuard)
@@ -105,6 +124,62 @@ export class ChatController {
       user.id,
       conversationId,
       dto,
+    );
+  }
+
+  @Get('conversations/:id/export')
+  async exportConversation(
+    @CurrentUser() user: AuthUser,
+    @Param('id') conversationId: string,
+    @Query('format') formatRaw: string,
+    @Res() res: Response,
+  ) {
+    const format: 'markdown' | 'json' = formatRaw === 'json' ? 'json' : 'markdown';
+    const result = await this.chatService.exportConversation(
+      user.id,
+      conversationId,
+      format,
+    );
+    res.setHeader('Content-Type', result.mimeType);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${result.filename}"`,
+    );
+    res.send(result.content);
+  }
+
+  @Post('conversations/:id/compact')
+  async compactConversation(
+    @CurrentUser() user: AuthUser,
+    @Param('id') conversationId: string,
+  ) {
+    return this.chatService.compactConversation(user.id, conversationId);
+  }
+
+  @Post('conversations/:id/rewind')
+  async rewindConversation(
+    @CurrentUser() user: AuthUser,
+    @Param('id') conversationId: string,
+    @Body() dto: RewindDto,
+  ) {
+    return this.chatService.rewindConversation(
+      user.id,
+      conversationId,
+      dto.fromMessageId,
+    );
+  }
+
+  @Post('conversations/:id/tool-approval')
+  async replyToolApproval(
+    @CurrentUser() user: AuthUser,
+    @Param('id') conversationId: string,
+    @Body() dto: ToolApprovalDto,
+  ) {
+    return this.chatService.replyToolApproval(
+      user.id,
+      conversationId,
+      dto.promptId,
+      dto.approved,
     );
   }
 
@@ -172,6 +247,37 @@ export class ChatController {
         onHtmlPreview: (html: string, filePath: string) => {
           res.write(`event: html_preview\n`);
           res.write(`data: ${JSON.stringify({ html, file_path: filePath })}\n\n`);
+        },
+        onToolStart: ({ toolName, argumentsJson, toolUseId }) => {
+          res.write(`event: tool_start\n`);
+          res.write(
+            `data: ${JSON.stringify({
+              tool_name: toolName,
+              arguments_json: argumentsJson,
+              tool_use_id: toolUseId,
+            })}\n\n`,
+          );
+        },
+        onToolResult: ({ toolName, toolUseId, output, isError }) => {
+          res.write(`event: tool_result\n`);
+          res.write(
+            `data: ${JSON.stringify({
+              tool_name: toolName,
+              tool_use_id: toolUseId,
+              output,
+              is_error: isError,
+            })}\n\n`,
+          );
+        },
+        onActionRequired: ({ promptId, toolName, argumentsJson }) => {
+          res.write(`event: action_required\n`);
+          res.write(
+            `data: ${JSON.stringify({
+              prompt_id: promptId,
+              tool_name: toolName,
+              arguments_json: argumentsJson,
+            })}\n\n`,
+          );
         },
         onDone: async ({ fullText, promptTokens, completionTokens }) => {
           const finalText = (fullText || streamedText).trim();

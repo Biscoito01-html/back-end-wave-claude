@@ -12,6 +12,31 @@ export interface StreamCallbacks {
   onError: (message: string) => void;
   onComplete?: () => void;
   onHtmlPreview?: (html: string, filePath: string) => void;
+  onToolStart?: (payload: {
+    toolName: string;
+    argumentsJson: string;
+    toolUseId: string | null;
+  }) => void;
+  onToolResult?: (payload: {
+    toolName: string;
+    toolUseId: string;
+    output: string;
+    isError: boolean;
+  }) => void;
+  onActionRequired?: (payload: {
+    promptId: string;
+    toolName: string;
+    argumentsJson: string;
+  }) => void;
+  /**
+   * Consultado antes de decidir se pede aprovação ou aprova automaticamente.
+   * Se retornar 'allow'/'deny', a decisão é imediata. Se 'ask' (ou undefined),
+   * segue o fluxo manualToolApproval.
+   */
+  resolvePermission?: (payload: {
+    toolName: string;
+    argumentsJson: string;
+  }) => Promise<'allow' | 'deny' | 'ask'>;
 }
 
 /** Subset of Anthropic ContentBlockParam used for image/text blocks */
@@ -61,6 +86,44 @@ export class OpenClaudeHttpService implements OnModuleInit {
     }
   }
 
+  /**
+   * Envia a resposta (aprovar/negar) para um prompt de tool pendente no Bun.
+   * Usado quando a conversa está com `manualToolApproval` ligado e o usuário
+   * respondeu no modal do frontend.
+   */
+  async replyToolInput(
+    sessionId: string,
+    promptId: string,
+    reply: 'y' | 'n',
+  ): Promise<void> {
+    await fetch(`${this.baseUrl}/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        prompt_id: promptId,
+        reply,
+      }),
+    });
+  }
+
+  /**
+   * Limpa o histórico em memória e inputs pendentes do Bun para uma sessão.
+   * Útil após compactação para forçar a engine a reler o histórico enviado no body.
+   */
+  async resetSession(sessionId: string): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/session/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+    } catch {
+      // ignora — quando Bun estiver em outro host, no pior caso a próxima mensagem
+      // ainda funcionará graças à priorização de sessionHistory.
+    }
+  }
+
   async streamChat(params: {
     sessionId: string;
     /** Plain text message — mutually exclusive with contentBlocks */
@@ -78,6 +141,14 @@ export class OpenClaudeHttpService implements OnModuleInit {
     maxTurns?: number;
     /** Per-user OpenRouter/OpenAI-compatible API key */
     apiKey?: string;
+    /** Provider-specific base URL override (e.g. Anthropic, OpenAI, local Ollama) */
+    baseUrl?: string;
+    /** Extra HTTP headers to forward to the provider */
+    extraHeaders?: Record<string, string> | null;
+    /** If true, do NOT auto-approve tool actions — surface them to the caller for manual approval */
+    manualToolApproval?: boolean;
+    /** MCP servers to register for this request (see Bun start-http-stream.ts) */
+    mcpServers?: Array<Record<string, unknown>>;
     callbacks: StreamCallbacks;
   }): Promise<() => void> {
     const controller = new AbortController();
@@ -99,6 +170,9 @@ export class OpenClaudeHttpService implements OnModuleInit {
           allowed_tools: params.allowedTools,
           max_turns: params.maxTurns,
           api_key: params.apiKey,
+          base_url: params.baseUrl,
+          extra_headers: params.extraHeaders ?? undefined,
+          mcp_servers: params.mcpServers,
         }),
         signal: controller.signal,
       });
@@ -187,13 +261,59 @@ export class OpenClaudeHttpService implements OnModuleInit {
         break;
 
       case 'action_required': {
+        const promptId = String(data.prompt_id ?? '');
+        const toolName = String(data.tool_name ?? '');
+        const argumentsJson = String(data.arguments_json ?? '{}');
+
+        // 1) Regra persistida (allow/deny) tem prioridade absoluta
+        let decision: 'allow' | 'deny' | 'ask' = 'ask';
+        if (params.callbacks.resolvePermission) {
+          try {
+            decision = await params.callbacks.resolvePermission({
+              toolName,
+              argumentsJson,
+            });
+          } catch {
+            decision = 'ask';
+          }
+        }
+
+        if (decision === 'allow' || decision === 'deny') {
+          try {
+            await fetch(`${this.baseUrl}/input`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                session_id: params.sessionId,
+                prompt_id: promptId,
+                reply: decision === 'allow' ? 'y' : 'n',
+              }),
+              signal: controller.signal,
+            });
+          } catch {
+            // ignore fetch errors for tool replies
+          }
+          break;
+        }
+
+        // 2) ask → respeita manualToolApproval da sessão
+        if (params.manualToolApproval) {
+          params.callbacks.onActionRequired?.({
+            promptId,
+            toolName,
+            argumentsJson,
+          });
+          break;
+        }
+
+        // 3) Default: auto-aprova
         try {
           await fetch(`${this.baseUrl}/input`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               session_id: params.sessionId,
-              prompt_id: data.prompt_id,
+              prompt_id: promptId,
               reply: 'y',
             }),
             signal: controller.signal,
@@ -205,18 +325,25 @@ export class OpenClaudeHttpService implements OnModuleInit {
       }
 
       case 'tool_start': {
+        const toolName = String(data.tool_name ?? '');
+        const argumentsJson = String(data.arguments_json ?? '{}');
+        const toolUseId = data.tool_use_id ? String(data.tool_use_id) : null;
+
+        params.callbacks.onToolStart?.({
+          toolName,
+          argumentsJson,
+          toolUseId,
+        });
+
         try {
-          const args = JSON.parse(String(data.arguments_json ?? '{}'));
+          const args = JSON.parse(argumentsJson);
           const filePath: string = args.file_path ?? '';
 
           if (filePath.endsWith('.html') && params.callbacks.onHtmlPreview) {
-            if (data.tool_name === 'Write') {
-              // Write: conteúdo completo disponível nos argumentos
+            if (toolName === 'Write') {
               const content: string = args.content ?? '';
               if (content) params.callbacks.onHtmlPreview(content, filePath);
-            } else if (data.tool_name === 'Edit') {
-              // Edit: guarda o caminho para ler o arquivo após o tool_result
-              const toolUseId = String(data.tool_use_id ?? '');
+            } else if (toolName === 'Edit') {
               if (toolUseId) pendingHtmlEdits.set(toolUseId, filePath);
             }
           }
@@ -228,8 +355,19 @@ export class OpenClaudeHttpService implements OnModuleInit {
 
       case 'tool_result': {
         const toolUseId = String(data.tool_use_id ?? '');
+        const toolName = String(data.tool_name ?? '');
+        const output = String(data.output ?? '');
+        const isError = Boolean(data.is_error);
+
+        params.callbacks.onToolResult?.({
+          toolName,
+          toolUseId,
+          output,
+          isError,
+        });
+
         const pendingPath = pendingHtmlEdits.get(toolUseId);
-        if (pendingPath && !data.is_error && params.callbacks.onHtmlPreview) {
+        if (pendingPath && !isError && params.callbacks.onHtmlPreview) {
           pendingHtmlEdits.delete(toolUseId);
           try {
             const updatedContent = await readFile(pendingPath, 'utf-8');
