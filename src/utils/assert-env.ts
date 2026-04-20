@@ -75,11 +75,27 @@ export function checkEnvironment(
       );
     }
 
+    // Bun host: aceita loopback (Bun no mesmo container) ou hostname de rede
+    // interna (ex.: service do EasyPanel, nome Docker Compose). Bloqueia IPs
+    // publicos, que seriam um erro grave de configuracao.
     const bunHost = env.OPENCLAUDE_HTTP_HOST ?? '127.0.0.1';
-    if (bunHost !== '127.0.0.1' && bunHost !== 'localhost') {
-      errors.push(
-        `OPENCLAUDE_HTTP_HOST deve ser 127.0.0.1 em producao (atual: ${bunHost}). O Bun nao pode ser exposto na rede.`,
-      );
+    const isLoopback = bunHost === '127.0.0.1' || bunHost === 'localhost';
+    const isPrivateIpv4 =
+      bunHost.startsWith('10.') ||
+      bunHost.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(bunHost) ||
+      bunHost.startsWith('127.');
+    const looksLikeIpv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(bunHost);
+    if (!isLoopback) {
+      if (looksLikeIpv4 && !isPrivateIpv4) {
+        errors.push(
+          `OPENCLAUDE_HTTP_HOST parece ser um IP publico (${bunHost}). O Bun nunca deve ser exposto na internet. Use 127.0.0.1 (mesmo container) ou o hostname interno do service.`,
+        );
+      } else {
+        warnings.push(
+          `OPENCLAUDE_HTTP_HOST nao eh loopback (atual: ${bunHost}). OK apenas se for hostname de rede interna (ex.: service do EasyPanel). NUNCA adicione Domain publico ao service Bun.`,
+        );
+      }
     }
 
     const disableRegister = (env.DISABLE_PUBLIC_REGISTER ?? '').toLowerCase();
