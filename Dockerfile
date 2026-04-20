@@ -35,7 +35,7 @@ COPY --from=nest-build /app/back/prisma ./prisma
 COPY --from=nest-build /app/back/package*.json ./
 
 # Supervisor (orquestra Nest + Bun no mesmo container)
-COPY back-end/openclaude/deploy/supervisord.conf /etc/supervisor/conf.d/openclaude.conf
+COPY /deploy/supervisord.conf /etc/supervisor/conf.d/openclaude.conf
 
 EXPOSE 3002
 CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]
