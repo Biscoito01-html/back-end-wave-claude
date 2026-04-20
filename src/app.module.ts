@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { AppThrottlerGuard } from './throttler/app-throttler.guard';
 import { AuthModule } from './auth/auth.module';
 import { ChatModule } from './chat/chat.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -22,8 +23,10 @@ import { GithubModule } from './integrations/github.module';
     }),
     ThrottlerModule.forRoot([
       {
+        // Limite global por-usuario (quando logado) ou por-IP (anonimo).
+        // Rotas de auth tem limite mais agressivo via @Throttle() local.
         ttl: 60_000,
-        limit: 100,
+        limit: 300,
       },
     ]),
     PrismaModule,
@@ -42,7 +45,7 @@ import { GithubModule } from './integrations/github.module';
   providers: [
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: AppThrottlerGuard,
     },
   ],
 })
