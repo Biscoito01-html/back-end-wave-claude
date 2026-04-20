@@ -14,6 +14,17 @@ async function bootstrap() {
   if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Desabilita ETag global do Express. Para APIs JSON autenticadas o ETag
+  // so causa problema: o browser envia If-None-Match, o servidor responde
+  // 304 sem body, e o fetch do front trata como erro (response.ok = false).
+  // Sintoma classico: endpoints como /me/usage retornando "zerados" no
+  // painel mesmo com dados no banco.
+  app.disable('etag');
+  // x-powered-by: Express deixa vazar "Express" em todo response header.
+  // Nao tem uso pratico e e informacao a menos pra quem esta fuzzando a API.
+  app.disable('x-powered-by');
+
   app.useStaticAssets(uploadDir, { prefix: '/uploads' });
 
   const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:8080';
