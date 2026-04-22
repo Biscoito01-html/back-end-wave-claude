@@ -39,8 +39,17 @@ const r3 = checkEnvironment({
   ENCRYPTION_SECRET: 'nao-tem-32',
   DATABASE_URL: 'postgresql://x',
 });
-expect('JWT curto rejeitado', r3.errors.some(e => e.includes('pelo menos 32')));
+expect('JWT curto rejeitado', r3.errors.some(e => e.includes('pelo menos 16')));
 expect('ENC tamanho errado rejeitado', r3.errors.some(e => e.includes('exatamente 32')));
+
+// --- Cenario 3b: JWT entre 16 e 32 chars passa mas emite warning ---
+const r3b = checkEnvironment({
+  JWT_SECRET: 'wave-panel-3.0-secret-key', // 25 chars (cenario prod real)
+  ENCRYPTION_SECRET: 'a'.repeat(32),
+  DATABASE_URL: 'postgresql://x',
+});
+expect('JWT 25 chars passa (compat gateway)', r3b.errors.length === 0, `erros: ${r3b.errors.join(' | ')}`);
+expect('JWT 25 chars emite warning de tamanho', r3b.warnings.some(w => w.includes('Recomendado 32')));
 
 // --- Cenario 4: dev minimamente valido ---
 const r4 = checkEnvironment({
@@ -50,15 +59,15 @@ const r4 = checkEnvironment({
 });
 expect('dev minimamente valido passa', r4.errors.length === 0, `erros: ${r4.errors.join(' | ')}`);
 
-// --- Cenario 5: prod sem extras (falha) ---
+// --- Cenario 5: prod sem extras — FRONTEND_URL nao eh mais obrigatorio ---
 const r5 = checkEnvironment({
   NODE_ENV: 'production',
   JWT_SECRET: 'a'.repeat(40),
   ENCRYPTION_SECRET: 'a'.repeat(32),
   DATABASE_URL: 'postgresql://x',
 });
-expect('prod sem FRONTEND_URL erra', r5.errors.some(e => e.includes('FRONTEND_URL')));
 expect('prod sem WORKSPACES_ROOT erra', r5.errors.some(e => e.includes('WORKSPACES_ROOT')));
+expect('prod sem FRONTEND_URL nao erra (microservico sem CORS)', !r5.errors.some(e => e.includes('FRONTEND_URL')));
 
 // --- Cenario 6: prod com Bun em 0.0.0.0 (falha) ---
 const r6 = checkEnvironment({
@@ -92,7 +101,6 @@ const r8 = checkEnvironment({
   JWT_SECRET: 'a'.repeat(40),
   ENCRYPTION_SECRET: 'a'.repeat(32),
   DATABASE_URL: 'postgresql://x',
-  FRONTEND_URL: 'https://app.example.com',
   WORKSPACES_ROOT: '/var/openclaude/workspaces',
   OPENCLAUDE_HTTP_HOST: '127.0.0.1',
   DISABLE_PUBLIC_REGISTER: 'true',
@@ -120,7 +128,6 @@ const r10 = checkEnvironment({
   JWT_SECRET: 'a'.repeat(40),
   ENCRYPTION_SECRET: 'a'.repeat(32),
   DATABASE_URL: 'postgresql://x',
-  FRONTEND_URL: 'https://app.example.com',
   WORKSPACES_ROOT: '/var/openclaude/workspaces',
   OPENCLAUDE_HTTP_HOST: '127.0.0.1',
 });

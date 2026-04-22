@@ -52,7 +52,9 @@ export class AuthService {
       where: { email: dto.email },
     });
 
-    if (!user) {
+    if (!user || !user.passwordHash) {
+      // user.passwordHash pode ser null em contas provisionadas via JIT pelo
+      // gateway (login externo) — essas contas nao fazem login local.
       throw new UnauthorizedException('Invalid credentials');
     }
 

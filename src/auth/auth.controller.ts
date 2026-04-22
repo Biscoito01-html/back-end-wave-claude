@@ -12,6 +12,13 @@ import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
+/**
+ * Como microservico atras do gateway `api-control-panel-core`, este
+ * controller nao deveria mais emitir JWTs proprios. Mantemos as rotas
+ * por compatibilidade/dev local, mas protegidas atras da flag
+ * ENABLE_LOCAL_AUTH. Em producao essa flag deve ficar desligada para
+ * centralizar autenticacao no gateway.
+ */
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -19,17 +26,29 @@ export class AuthController {
     private readonly configService: ConfigService,
   ) {}
 
+  private ensureLocalAuthEnabled(): void {
+    const raw = (
+      this.configService.get<string>('ENABLE_LOCAL_AUTH') ?? ''
+    )
+      .toLowerCase()
+      .trim();
+    const enabled = raw === 'true' || raw === '1';
+    if (!enabled) {
+      throw new ForbiddenException(
+        'Autenticacao local desabilitada. Use o gateway para obter um token.',
+      );
+    }
+  }
+
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @Post('register')
   register(@Body() dto: RegisterDto): Promise<{ access_token: string }> {
+    this.ensureLocalAuthEnabled();
     const disabled = (
       this.configService.get<string>('DISABLE_PUBLIC_REGISTER') ?? ''
     )
       .toLowerCase()
       .trim();
-    // #region agent log
-    fetch('http://127.0.0.1:7663/ingest/53ec07ba-5f17-47c7-8ec5-3fd963c44b2a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'3abb1f'},body:JSON.stringify({sessionId:'3abb1f',hypothesisId:'H5',location:'auth.controller.ts:register',message:'register attempt',data:{disabledRaw:disabled,willBlock:disabled==='true'||disabled==='1'},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (disabled === 'true' || disabled === '1') {
       throw new ForbiddenException(
         'Registro publico desabilitado. Peca para um administrador criar sua conta.',
@@ -42,9 +61,7 @@ export class AuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   login(@Body() dto: LoginDto): Promise<{ access_token: string }> {
-    // #region agent log
-    fetch('http://127.0.0.1:7663/ingest/53ec07ba-5f17-47c7-8ec5-3fd963c44b2a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'3abb1f'},body:JSON.stringify({sessionId:'3abb1f',hypothesisId:'H4',location:'auth.controller.ts:login',message:'login attempt reached handler (not throttled)',data:{emailHash:dto?.email?String(dto.email).length:0},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
+    this.ensureLocalAuthEnabled();
     return this.authService.login(dto);
   }
 }

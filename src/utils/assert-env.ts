@@ -27,13 +27,22 @@ export function checkEnvironment(
   const jwt = env.JWT_SECRET ?? '';
   if (!jwt) {
     errors.push('JWT_SECRET ausente.');
-  } else if (jwt.length < 32) {
+  } else if (jwt.length < 16) {
+    // Minimo de 16 chars: este servico compartilha o JWT_SECRET com o
+    // gateway `api-control-panel-core` (e outros 10+ microservicos). O
+    // secret atual tem 25 chars; rotacionar para um mais longo exige
+    // coordenacao em toda a frota. O assert fica em 16 para nao bloquear
+    // o boot e fica a cargo do operador fazer hardening posteriormente.
     errors.push(
-      `JWT_SECRET deve ter pelo menos 32 caracteres (atual: ${jwt.length}).`,
+      `JWT_SECRET deve ter pelo menos 16 caracteres (atual: ${jwt.length}).`,
     );
   } else if (jwt === PLACEHOLDER_JWT) {
     errors.push(
       'JWT_SECRET esta com o valor placeholder do .env.example. Gere um secret real.',
+    );
+  } else if (jwt.length < 32) {
+    warnings.push(
+      `JWT_SECRET tem ${jwt.length} caracteres. Recomendado 32+. Planeje rotacao coordenada com o gateway e demais microservicos.`,
     );
   }
 
@@ -55,10 +64,11 @@ export function checkEnvironment(
   }
 
   if (isProd) {
+    // FRONTEND_URL nao e mais requisito: este servico roda como microservico
+    // atras do gateway e nao configura CORS. Mantido apenas para compat
+    // (alguns scripts ainda leem), mas agora e opcional.
     const frontendUrl = env.FRONTEND_URL ?? '';
-    if (!frontendUrl) {
-      errors.push('FRONTEND_URL ausente em producao.');
-    } else if (frontendUrl.startsWith('http://')) {
+    if (frontendUrl && frontendUrl.startsWith('http://')) {
       warnings.push(
         `FRONTEND_URL esta sem TLS (${frontendUrl}). Recomendado usar https:// em producao.`,
       );

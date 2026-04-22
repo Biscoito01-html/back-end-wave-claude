@@ -25,13 +25,21 @@ async function bootstrap() {
   // Nao tem uso pratico e e informacao a menos pra quem esta fuzzando a API.
   app.disable('x-powered-by');
 
-  app.useStaticAssets(uploadDir, { prefix: '/uploads' });
+  // Prefixo global: este backend roda atras do api-control-panel-core, que
+  // nao reescreve path. Requests chegam como /wave-claude/<rota>. Para os
+  // controllers continuarem declarando @Controller('conversations') etc.,
+  // aplicamos o prefix aqui.
+  app.setGlobalPrefix('wave-claude');
 
-  const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:8080';
-  app.enableCors({
-    origin: frontendUrl,
-    credentials: true,
-  });
+  // Estaticos de upload precisam casar com o prefix global para que URLs
+  // como /wave-claude/uploads/<arquivo> continuem servindo a partir do
+  // gateway (que preserva o path inteiro).
+  app.useStaticAssets(uploadDir, { prefix: '/wave-claude/uploads' });
+
+  // CORS: este servico so recebe requests server-to-server vindas do
+  // gateway. Nao ha browser chamando direto, entao nao habilitamos CORS.
+  // Defesa em profundidade mesmo com o dominio publico no EasyPanel.
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -45,6 +53,6 @@ async function bootstrap() {
 
   const port = process.env.PORT ?? '3002';
   await app.listen(port);
-  console.log(`[Backend] Rodando na porta ${port} | CORS: ${frontendUrl}`);
+  console.log(`[Backend] Rodando na porta ${port} | prefix: /wave-claude`);
 }
 bootstrap();
