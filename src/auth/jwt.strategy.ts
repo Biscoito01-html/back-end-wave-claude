@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
+import { Prisma } from '@prisma/client';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from './auth.types';
@@ -68,19 +69,65 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         ? 'admin'
         : 'user';
 
+    const user = await this.resolveOrProvisionUser({
+      externalId: payload.sub,
+      email,
+      hasEmail,
+      roleFromPayload,
+    });
+
+    return {
+      id: user.id,
+      email: user.email,
+      role: user.role === 'admin' ? 'admin' : 'user',
+    };
+  }
+
+  /**
+   * Resolve o usuario local correspondente ao payload do gateway, criando
+   * sob demanda (JIT) quando necessario.
+   *
+   * Protegido contra race conditions (P2002 no unique de `email` ou
+   * `external_id`) quando duas requisicoes do mesmo login recem-chegado
+   * acontecem em paralelo — cenario comum na primeira carga da UI.
+   * Em caso de conflito, re-consultamos o banco para retornar o registro
+   * "vencedor" da corrida, evitando 500 Internal Server Error.
+   */
+  private async resolveOrProvisionUser(input: {
+    externalId: string;
+    email: string;
+    hasEmail: boolean;
+    roleFromPayload: AuthUser['role'];
+  }) {
+    const { externalId, email, hasEmail, roleFromPayload } = input;
+
     // 1) Caminho feliz: ja foi JIT-provisionado.
     let user = await this.prisma.user.findUnique({
-      where: { externalId: payload.sub },
+      where: { externalId },
     });
 
     // 2) Usuario legado sem externalId mas com mesmo email.
     if (!user && hasEmail) {
       const byEmail = await this.prisma.user.findUnique({ where: { email } });
       if (byEmail) {
-        user = await this.prisma.user.update({
-          where: { id: byEmail.id },
-          data: { externalId: payload.sub, role: roleFromPayload },
-        });
+        try {
+          user = await this.prisma.user.update({
+            where: { id: byEmail.id },
+            data: { externalId, role: roleFromPayload },
+          });
+        } catch (err) {
+          // Outra request paralela ja atribuiu externalId (ou ao mesmo,
+          // ou houve colisao com outro sub). Tenta localizar de novo.
+          if (this.isUniqueConstraintViolation(err)) {
+            user =
+              (await this.prisma.user.findUnique({
+                where: { externalId },
+              })) ??
+              (await this.prisma.user.findUnique({ where: { email } }));
+          } else {
+            throw err;
+          }
+        }
       }
     }
 
@@ -90,29 +137,81 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         // Sem email nao da para criar um user consistente (unique constraint).
         throw new UnauthorizedException('Payload sem email para JIT');
       }
-      user = await this.prisma.user.create({
-        data: {
-          externalId: payload.sub,
-          email,
-          passwordHash: null,
-          role: roleFromPayload,
-        },
-      });
+      try {
+        user = await this.prisma.user.create({
+          data: {
+            externalId,
+            email,
+            passwordHash: null,
+            role: roleFromPayload,
+          },
+        });
+      } catch (err) {
+        // Race condition: outra request paralela criou o usuario primeiro
+        // (via externalId OU email). Recuperamos o registro vencedor.
+        if (this.isUniqueConstraintViolation(err)) {
+          user =
+            (await this.prisma.user.findUnique({
+              where: { externalId },
+            })) ??
+            (hasEmail
+              ? await this.prisma.user.findUnique({ where: { email } })
+              : null);
+
+          if (!user) {
+            // Situacao realmente inesperada: houve P2002 mas nenhum
+            // registro foi encontrado depois. Melhor falhar explicitamente
+            // do que propagar um 500 generico.
+            throw new UnauthorizedException(
+              'Falha ao provisionar usuario (conflito de unicidade irrecuperavel)',
+            );
+          }
+
+          // Se encontramos pelo email mas o externalId esta vazio/diferente,
+          // tenta atualizar. Se falhar de novo, segue em frente com o que
+          // temos — o proximo login resolve.
+          if (!user.externalId || user.externalId !== externalId) {
+            try {
+              user = await this.prisma.user.update({
+                where: { id: user.id },
+                data: { externalId, role: roleFromPayload },
+              });
+            } catch (updateErr) {
+              if (!this.isUniqueConstraintViolation(updateErr)) {
+                throw updateErr;
+              }
+            }
+          }
+        } else {
+          throw err;
+        }
+      }
     } else if (
       hasEmail &&
       (user.email !== email || user.role !== roleFromPayload)
     ) {
       // Mantem email e role sincronizados com o gateway a cada login.
-      user = await this.prisma.user.update({
-        where: { id: user.id },
-        data: { email, role: roleFromPayload },
-      });
+      try {
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: { email, role: roleFromPayload },
+        });
+      } catch (err) {
+        // Se outra request paralela alterou o email para algo que colide,
+        // preferimos manter o registro anterior em memoria a propagar 500.
+        if (!this.isUniqueConstraintViolation(err)) {
+          throw err;
+        }
+      }
     }
 
-    return {
-      id: user.id,
-      email: user.email,
-      role: user.role === 'admin' ? 'admin' : 'user',
-    };
+    return user;
+  }
+
+  private isUniqueConstraintViolation(err: unknown): boolean {
+    return (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    );
   }
 }
