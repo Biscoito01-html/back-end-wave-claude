@@ -7,16 +7,71 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from './auth.types';
 
-/** Mesmo nome do cookie definido em `api-control-panel-core` (login credencial / Google). */
-const ACCESS_TOKEN_COOKIE = 'accessToken';
+/**
+ * Cookies aceitos para compatibilidade entre fluxos:
+ * - `accessToken`: padrão atual do gateway;
+ * - `auth_token`: chave legacy usada pelo front no localStorage;
+ * - aliases adicionais para cenários de proxy/rewrite em produção.
+ */
+const JWT_COOKIE_CANDIDATES = [
+  'accessToken',
+  'auth_token',
+  'token',
+  'jwt',
+] as const;
+
+function parseCookieHeader(rawCookieHeader?: string): Record<string, string> {
+  if (!rawCookieHeader || rawCookieHeader.trim().length === 0) {
+    return {};
+  }
+
+  const parsed: Record<string, string> = {};
+  for (const part of rawCookieHeader.split(';')) {
+    const [name, ...valueParts] = part.split('=');
+    if (!name) continue;
+    const cookieName = name.trim();
+    if (!cookieName) continue;
+    const rawValue = valueParts.join('=').trim();
+    if (!rawValue) continue;
+    try {
+      parsed[cookieName] = decodeURIComponent(rawValue);
+    } catch {
+      parsed[cookieName] = rawValue;
+    }
+  }
+  return parsed;
+}
 
 function jwtFromAccessCookie(req: Request): string | null {
-  const raw = (req?.cookies as Record<string, string> | undefined)?.[
-    ACCESS_TOKEN_COOKIE
-  ];
+  const cookies = req?.cookies as Record<string, string> | undefined;
+  const signedCookies = req?.signedCookies as Record<string, string> | undefined;
+  const headerCookies = parseCookieHeader(req?.headers?.cookie);
+
+  let raw: string | undefined;
+  for (const cookieName of JWT_COOKIE_CANDIDATES) {
+    const plainCookie = cookies?.[cookieName];
+    if (typeof plainCookie === 'string' && plainCookie.trim().length > 0) {
+      raw = plainCookie;
+      break;
+    }
+
+    const signedCookie = signedCookies?.[cookieName];
+    if (typeof signedCookie === 'string' && signedCookie.trim().length > 0) {
+      raw = signedCookie;
+      break;
+    }
+
+    const headerCookie = headerCookies[cookieName];
+    if (typeof headerCookie === 'string' && headerCookie.trim().length > 0) {
+      raw = headerCookie;
+      break;
+    }
+  }
+
   if (typeof raw !== 'string' || raw.trim().length === 0) {
     return null;
   }
+
   const trimmed = raw.trim();
   return trimmed.startsWith('Bearer ') ? trimmed.slice(7).trim() : trimmed;
 }
@@ -42,7 +97,8 @@ interface GatewayJwtPayload {
  *
  * O token pode vir em:
  * - `Authorization: Bearer <jwt>` (ex.: front com token no localStorage), ou
- * - cookie HttpOnly `accessToken` (ex.: login Google / refresh no gateway),
+ * - cookie HttpOnly (`accessToken`, `auth_token`, `token`, `jwt`)
+ *   (ex.: login Google / refresh no gateway),
  *   desde que `cookie-parser` esteja ativo em `main.ts`.
  *
  * Ordem de resolucao do usuario:

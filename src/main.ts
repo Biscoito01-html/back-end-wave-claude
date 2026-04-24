@@ -16,8 +16,9 @@ async function bootstrap() {
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // Cookie HttpOnly do gateway (`accessToken`) — necessario para JwtStrategy
-  // ler o mesmo JWT quando o request chega com credentials e sem Authorization.
+  // Cookies HttpOnly do gateway (`accessToken` e aliases de compatibilidade)
+  // — necessario para JwtStrategy ler o JWT quando o request chega com
+  // credentials e sem Authorization.
   app.use(cookieParser());
 
   // Desabilita ETag global do Express. Para APIs JSON autenticadas o ETag
