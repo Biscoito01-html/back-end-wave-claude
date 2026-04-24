@@ -2,9 +2,24 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { Prisma } from '@prisma/client';
+import type { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from './auth.types';
+
+/** Mesmo nome do cookie definido em `api-control-panel-core` (login credencial / Google). */
+const ACCESS_TOKEN_COOKIE = 'accessToken';
+
+function jwtFromAccessCookie(req: Request): string | null {
+  const raw = (req?.cookies as Record<string, string> | undefined)?.[
+    ACCESS_TOKEN_COOKIE
+  ];
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed.startsWith('Bearer ') ? trimmed.slice(7).trim() : trimmed;
+}
 
 /**
  * Payload emitido pelo gateway `api-control-panel-core`. O `sub` e o uuid
@@ -22,7 +37,13 @@ interface GatewayJwtPayload {
 /**
  * Estrategia JWT compartilhada com o gateway. O OpenClaude agora e um
  * microservico: nao emite mais JWT proprio (excepto quando ENABLE_LOCAL_AUTH),
- * apenas valida e faz JIT provisioning do usuario correspondente.
+ * apenas valida a assinatura/expiracao do JWT e resolve o `sub` (id do usuario
+ * no gateway) para o usuario local (JIT quando necessario).
+ *
+ * O token pode vir em:
+ * - `Authorization: Bearer <jwt>` (ex.: front com token no localStorage), ou
+ * - cookie HttpOnly `accessToken` (ex.: login Google / refresh no gateway),
+ *   desde que `cookie-parser` esteja ativo em `main.ts`.
  *
  * Ordem de resolucao do usuario:
  *  1. Por `externalId = payload.sub` — caminho feliz apos o primeiro login.
@@ -44,7 +65,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new Error('JWT_SECRET is not configured');
     }
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        jwtFromAccessCookie,
+      ]),
       ignoreExpiration: false,
       secretOrKey: secret,
     });

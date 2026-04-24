@@ -55,7 +55,7 @@ export class OpenClaudeHttpService implements OnModuleInit {
   private readonly logger = new Logger(OpenClaudeHttpService.name);
   private baseUrl!: string;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(private readonly configService: ConfigService) { }
 
   onModuleInit() {
     const host =
@@ -183,7 +183,7 @@ export class OpenClaudeHttpService implements OnModuleInit {
         ? `O servidor OpenClaude não está disponível em ${this.baseUrl}. Execute: npm run dev:http`
         : (err.message ?? 'Falha ao conectar ao servidor OpenClaude');
       params.callbacks.onError(msg);
-      return () => {};
+      return () => { };
     }
 
     if (!response.ok || !response.body) {
@@ -195,7 +195,7 @@ export class OpenClaudeHttpService implements OnModuleInit {
 
     // Maps tool_use_id → file_path for Edit calls on .html files
     const pendingHtmlEdits = new Map<string, string>();
-    this.consumeStream(response.body, params, controller, pendingHtmlEdits).catch(() => {});
+    this.consumeStream(response.body, params, controller, pendingHtmlEdits).catch(() => { });
 
     return () => controller.abort();
   }

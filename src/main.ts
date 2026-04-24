@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import cookieParser from 'cookie-parser';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { AppModule } from './app.module';
@@ -14,6 +15,10 @@ async function bootstrap() {
   if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Cookie HttpOnly do gateway (`accessToken`) — necessario para JwtStrategy
+  // ler o mesmo JWT quando o request chega com credentials e sem Authorization.
+  app.use(cookieParser());
 
   // Desabilita ETag global do Express. Para APIs JSON autenticadas o ETag
   // so causa problema: o browser envia If-None-Match, o servidor responde
